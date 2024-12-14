@@ -1,0 +1,123 @@
+version: '3.8' 
+
+services:
+  db:
+    image: postgres:13
+    env_file:
+      - .env.dev
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    build:
+      context: ./mlflow 
+      dockerfile: Dockerfile
+    ports:
+      - "5002:5002"
+    env_file:
+      - .env.dev
+    environment:
+      MLFLOW_TRACKING_URI: "postgresql://postgres:your_password@db:5432/magic"
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: "/mlflow/artifacts"
+    volumes:
+      - mlflow_data:/mlflow/artifacts
+    networks:
+      - app-network
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  magic-database:
+    image: pgvector/pgvector:0.6.0-pg16
+    env_file:
+      - .env.dev
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5003:5432" 
+    volumes:
+      - ~/.postgres/data:/var/lib/postgresql/data
+      - ./scripts/database:/docker-entrypoint-initdb.d
+    restart: always
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  magic-platform:
+    env_file:
+      - .env.dev
+    build:
+      context: ./magic-platform 
+    command: ["./wait-for-it.sh", "mlflow:5002", "--", "/app/run_app.sh", "mage", "start", "$PROJECT_NAME"]
+    ports:
+      - "6789:6789"
+    volumes:
+      - "${PWD}:/$MAGE_CODE_PATH"
+      - "./mage/models:/mage/models"
+      - "~/.mage_data:/mage/mage_data"
+      - "~/.aws:/root/.aws"
+      - "~/.ssh:/root/.ssh:ro"
+      - "./wait-for-it.sh:/wait-for-it.sh:ro"
+    restart: on-failure:5
+    networks:
+      - app-network
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+      magic-database:
+        condition: service_healthy
+
+  flask-app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.dev
+    environment:
+      MLFLOW_TRACKING_URI: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+    networks:
+      - app-network
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  db_data:
+  mlflow_data:
+
+networks:
+  app-network:
+    driver: bridge

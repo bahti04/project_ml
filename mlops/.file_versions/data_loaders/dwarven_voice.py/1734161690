@@ -1,0 +1,8 @@
+import pandas as pd
+
+
+@data_loader
+def load_data(*args, **kwargs):
+    df = pd.read_parquet('')
+
+    return
